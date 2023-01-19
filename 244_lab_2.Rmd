@@ -1,0 +1,185 @@
+---
+title: "Lab 2"
+author: "Katheryn Moya"
+date: "1/19/2023"
+output: html_document
+---
+
+```{r setup, echo = TRUE, message = FALSE,  warning = FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+
+library(tidyverse)
+library(palmerpenguins)
+library(AICcmodavg)
+library(equatiomatic)
+```
+
+# Predicting penguin mass
+
+```{r}
+penguins_clean <- penguins %>% 
+  drop_na() %>% 
+  rename(mass = body_mass_g,
+         bill_l = bill_length_mm,
+         bill_d = bill_depth_mm,
+         flip_l = flipper_length_mm)
+
+mdl1 <- lm(mass ~ bill_l + bill_d + flip_l + species + sex + island, 
+         data = penguins_clean) #basically putting all of the variables in the model
+
+#summary(mdl1) tells us a bunch of information --- residuals - for each point how far is it from predicted value, estimates are the coefficients it puts on each variable, everything is being compared to adelie bc of alphabetical order, telling us that this model will do a pretty good job of predicting
+
+# can use AIC(mdl1) in console, this number is meaningless on its own -- penalty takes off points for each variable, negative log likelihood of getting this particular set of data using this particular model
+
+#can then create other models and compare them
+```
+
+
+```{r}
+# r has the ability to recognize a formula as a specific object
+
+f1 <- mass ~ bill_l + bill_d + flip_l + species + sex + island
+
+# can then use this to plug it in for each model, cleans it up
+
+mdl1 <- lm(f1, data = penguins_clean)
+
+f2 <- mass ~ bill_l + bill_d + flip_l + species + sex
+
+mdl2 <- lm(f2, data = penguins_clean)
+
+#summary(mdl2) tells us very similar things as mdl1
+
+AIC(mdl1, mdl2)
+
+#degrees of freedom are how many parameters we're putting into it
+# our second model predicts almost as well and is simpler
+
+f3 <- mass ~ bill_d + flip_l + species + sex
+
+mdl3 <- lm(f3, data = penguins_clean)
+
+AIC(mdl1, mdl2, mdl3)
+
+# good evidence mdl2 is a better model than the first, when we drop another variable, the AIC goes up, so we're saving a variable but the predictive power is less
+
+BIC(mdl1, mdl2, mdl3)
+
+# BIC penalizes additional parameters more strongly than AIC, so it boosts up mdl1 than the other once 
+
+AICcmodavg::AICc(mdl1) #using AIC corrected
+
+aictab(list(mdl1, mdl2, mdl3))
+
+#tells us LL (law of likelihood)
+
+bictab(list(mdl1,mdl2,mdl3))
+```
+
+# Compare models using k-fold cross validation
+
+```{r}
+folds <- 10 #testing out 10% of the dataset to then compare to the rest, will continue to change each %
+
+fold_vec <- rep(1:folds, length.out = nrow(penguins_clean)) #vector will create labels to tack onto dataset to tell each variable which bin we will put it in
+
+set.seed(42) #using psuedo random numbers, starting at the same random number in the generator 
+
+penguins_fold <- penguins_clean %>% 
+  mutate(group = sample(fold_vec, size = n(), replace = FALSE)) #taking set of 333 observations and pull them out at random and stick them in random rows
+
+table(penguins_fold$group)
+
+test_df <- penguins_fold %>% 
+  filter(group == 1)
+train_df <- penguins_fold %>% 
+  filter(group != 1)
+
+#how are we going to compare how well our model performs? here we are trying to predict a continuous variable so we need a way to asses how closely does the model predict for each individual point -- use RMSE
+```
+
+```{r}
+calc_mean <- function(x) {
+  m = sum(x) / length(x)
+}
+
+calc_rmse <- function(x, y) {#creating a new function
+  rmse <- (x-y)^2 %>% 
+    mean() %>% 
+    sqrt()    
+  return(rmse)
+  }
+```
+
+```{r}
+#will now put in train dataframe, will look similar because we are using 90% of the data
+
+training_mdl1 <- lm(f1, data = train_df) #based on this smaller set, this is how we would predict mass based on these other variables
+
+training_mdl2 <- lm(f2, data = train_df)
+
+training_mdl3 <- lm(f3, data = train_df)
+
+#predict_test --- new dataframe that are predictions based on test subset, for the 34 penguins it's never seen before
+predict_test <- test_df %>% 
+  mutate(model1 = predict(training_mdl1, test_df),
+         model2 = predict(training_mdl2, test_df),
+         model3 = predict(training_mdl3, test_df)) #can then check how close it is to the actual data, error will be the difference between those values, then we will square that difference, find the avg and take the sq root
+
+rmse_predict_test <- predict_test %>% 
+  summarize(rmse_mdl1 = calc_rmse(model1, mass),
+           rmse_mdl2 = calc_rmse(model2, mass),
+           rmse_mdl3 = calc_rmse(model3, mass)) #comparing predicting column to mass col
+
+```
+
+# let's iterate!
+```{r}
+rmse_df <- data.frame() #create an empty dataframe to act as a placeholder
+
+for(i in 1:folds) {
+  kfold_test_df <- penguins_fold %>% 
+    filter(group == i)
+  kfold_train_df <- penguins_fold %>% 
+    filter(group != i)
+  
+  kfold_mdl1 <- lm(f1, data = kfold_train_df)
+  kfold_mdl2 <- lm(f2, data = kfold_train_df)
+  kfold_mdl3 <- lm(f3, data = kfold_train_df) 
+  
+  kfold_pred_df <- kfold_test_df %>% 
+    mutate(mdl1 = predict(kfold_mdl1, .),
+          mdl2 = predict(kfold_mdl2, . ), # can use . to use the same dataframe as above
+          mdl3 = predict(kfold_mdl3, .))
+  
+  kfold_rmse_df <- kfold_pred_df %>% 
+    summarize(rmse_mdl1 = calc_rmse(mdl1, mass),
+              rmse_mdl2 = calc_rmse(mdl2, mass),
+              rmse_mdl3 = calc_rmse(mdl3, mass),
+              test_gp = i)
+  
+  #want to store this before continuing the loop
+  
+  rmse_df <- bind_rows(rmse_df, kfold_rmse_df)
+} #every time we start with i it will got from { to } and it will do everything in between
+
+#gonna take the average of all of the rows to determine on average which had the closets results
+rmse_df  %>% 
+  summarize(mean_rmse_mdl1 = mean(rmse_mdl1),
+            mean_rmse_mdl2 = mean(rmse_mdl2),
+            mean_rmse_mdl3 = mean(rmse_mdl3))
+#model 2 has the best predictive ability of the ones here
+```
+
+#finalize the model
+
+```{r}
+final_mdl <- lm(f2, data = penguins_clean)
+```
+
+Our final model:
+`r equatiomatic::extract_eq(final_mdl, wrap = TRUE)`
+
+And with coefficients:
+`r equatiomatic::extract_eq(final_mdl, wrap = TRUE, use_coefs = TRUE)`
